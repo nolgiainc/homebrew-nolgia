@@ -1,5 +1,8 @@
 name: Update Formula
 
+# Bumps only the version and sha256 fields of Formula/nolgia.rb to match the
+# latest nolgia-cli release. The formula itself is a normal committed file;
+# edit it freely — this workflow never rewrites anything else.
 on:
   schedule:
     - cron: '17 */6 * * *'
@@ -19,57 +22,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Regenerate formula from the latest nolgia-cli release
+      - name: Bump version and checksums
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           TAG=$(gh release view --repo nolgiacorp/nolgia-cli --json tagName --jq .tagName)
-          VERSION=${TAG#v}
+          export VERSION=${TAG#v}
           BASE="https://github.com/nolgiacorp/nolgia-cli/releases/download/${TAG}"
-          curl -sSL -o mac "${BASE}/nolgia-x86_64-apple-darwin"
-          curl -sSL -o linux "${BASE}/nolgia-x86_64-unknown-linux-gnu"
-          MAC_SHA=$(sha256sum mac | cut -d' ' -f1)
-          LINUX_SHA=$(sha256sum linux | cut -d' ' -f1)
-          rm -f mac linux
-          mkdir -p Formula
-          cat > Formula/nolgia.rb <<FORMULA
-          class Nolgia < Formula
-            desc "CLI for the Nolgia generative media platform (image, audio, video)"
-            homepage "https://nolgia.ai"
-            version "${VERSION}"
-            license "MIT OR Apache-2.0"
+          export MAC_SHA=$(curl -sSL "${BASE}/nolgia-x86_64-apple-darwin" | sha256sum | cut -d' ' -f1)
+          export LINUX_SHA=$(curl -sSL "${BASE}/nolgia-x86_64-unknown-linux-gnu" | sha256sum | cut -d' ' -f1)
+          python3 - <<'PY'
+          import os
+          import re
 
-            on_macos do
-              url "${BASE}/nolgia-x86_64-apple-darwin"
-              sha256 "${MAC_SHA}"
-            end
-
-            on_linux do
-              url "${BASE}/nolgia-x86_64-unknown-linux-gnu"
-              sha256 "${LINUX_SHA}"
-            end
-
-            def install
-              binary = Dir["nolgia-*"].first
-              bin.install binary => "nolgia"
-            end
-
-            test do
-              assert_match version.to_s, shell_output("#{bin}/nolgia --version")
-            end
-          end
-          FORMULA
+          path = "Formula/nolgia.rb"
+          text = open(path).read()
+          text = re.sub(r'^(  version )"[^"]*"', rf'\g<1>"{os.environ["VERSION"]}"', text, count=1, flags=re.M)
+          shas = iter([os.environ["MAC_SHA"], os.environ["LINUX_SHA"]])
+          text = re.sub(r'(sha256 )"[^"]*"', lambda m: f'{m.group(1)}"{next(shas)}"', text, count=2)
+          open(path, "w").write(text)
+          PY
 
       - name: Commit if changed
         run: |
           set -euo pipefail
-          if git diff --quiet; then
-            echo "formula already current"
-            exit 0
-          fi
+          git diff --quiet && { echo "formula already current"; exit 0; }
           git config user.name "nolgia-bot"
           git config user.email "admin@nolgia.ai"
           git add Formula/nolgia.rb
-          git commit -m "chore: update formula to latest release"
+          git commit -m "chore: bump nolgia formula"
           git push
