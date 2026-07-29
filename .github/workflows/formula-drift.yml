@@ -1,0 +1,86 @@
+name: Formula drift check
+
+# Fails when Formula/nolgia.rb does not match the latest nolgia-cli release.
+#
+# Why this exists separately from Update Formula: that workflow SELF-HEALS, so
+# when it is working this check never fires. Its whole purpose is to be the
+# alarm for when the bumper itself is broken or wedged.
+#
+# NOL-137 was filed claiming the tap had fallen two releases behind. It had
+# not — the audit read a stale local clone, and the bumper had already shipped
+# 0.2.12 hours earlier. But nothing anywhere reports whether the tap is
+# current, so the claim was expensive to disprove and a REAL stall would have
+# been just as invisible. That is what this check fixes: not a drift that
+# happened, but the absence of any signal either way.
+#
+# Deliberately read-only: it fixes nothing, it only makes drift loud.
+on:
+  schedule:
+    # 06:41 UTC daily — offset from Update Formula's */6 cadence so a bump has
+    # settled before we assert on it.
+    - cron: '41 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: formula-drift
+  cancel-in-progress: true
+
+jobs:
+  drift:
+    name: Formula matches latest nolgia-cli release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Compare formula against latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          REPO="nolgiainc/nolgia-cli"
+          TAG=$(gh release view --repo "${REPO}" --json tagName --jq .tagName)
+          LATEST="${TAG#v}"
+          FORMULA=$(sed -n 's/^  version "\(.*\)"/\1/p' Formula/nolgia.rb)
+
+          echo "latest nolgia-cli release : ${LATEST}"
+          echo "Formula/nolgia.rb version : ${FORMULA}"
+
+          if [ -z "${FORMULA}" ]; then
+            echo "::error::Could not parse a version out of Formula/nolgia.rb."
+            exit 1
+          fi
+
+          if [ "${FORMULA}" != "${LATEST}" ]; then
+            echo "::error::Tap drift: formula is at ${FORMULA} but nolgia-cli latest is ${LATEST}. 'brew install nolgia' is shipping a stale CLI. The Update Formula workflow should have fixed this automatically — check its recent runs, it is probably failing or disabled."
+            exit 1
+          fi
+
+          # Version agreeing is not sufficient: a correct version number with a
+          # wrong checksum fails every `brew install` with a confusing mismatch
+          # error, so verify the bytes too.
+          BASE="https://github.com/${REPO}/releases/download/${TAG}"
+          check_sha() {
+            local name="$1" label="$2"
+            curl -fsSL --retry 3 --retry-delay 5 -o artifact.bin "${BASE}/${name}"
+            local actual expected
+            actual=$(sha256sum artifact.bin | cut -d' ' -f1)
+            expected=$(grep -A1 "${name}\"" Formula/nolgia.rb | sed -n 's/.*sha256 "\(.*\)"/\1/p')
+            if [ "${actual}" != "${expected}" ]; then
+              echo "::error::${label} checksum mismatch. Formula has ${expected}, released artifact hashes to ${actual}."
+              exit 1
+            fi
+            echo "${label} sha256 OK (${actual})"
+            rm -f artifact.bin
+          }
+
+          check_sha nolgia-x86_64-apple-darwin "macOS"
+          check_sha nolgia-x86_64-unknown-linux-gnu "Linux"
+
+          echo "Formula is current with ${TAG} and both checksums match."
