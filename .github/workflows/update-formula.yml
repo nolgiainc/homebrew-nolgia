@@ -63,12 +63,10 @@ jobs:
             echo "Dispatched for tag: ${DISPATCH_TAG} (re-resolving from API anyway)"
           fi
 
-          # The repo moved nolgiacorp -> nolgiainc. The old name still works via
-          # GitHub's org-rename redirect, which is why this kept passing, but
-          # relying on it is a supply-chain hazard: if the abandoned org name is
-          # ever re-registered by someone else, the redirect stops pointing at
-          # us and this job would hash a stranger's binaries and push them to
-          # the tap. Always address the canonical org.
+          # Always address the canonical org explicitly rather than relying on
+          # GitHub's org-rename redirect: if an abandoned old org name is ever
+          # re-registered by someone else, the redirect stops pointing at us and
+          # this job would hash a stranger's binaries and push them to the tap.
           REPO="nolgiainc/nolgia-cli"
 
           TAG=$(gh release view --repo "${REPO}" --json tagName --jq .tagName)
