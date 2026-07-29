@@ -4,10 +4,14 @@ name: Formula drift check
 #
 # Why this exists separately from Update Formula: that workflow SELF-HEALS, so
 # when it is working this check never fires. Its whole purpose is to be the
-# alarm for when the bumper itself is broken or wedged. NOL-137 was found by a
-# manual audit precisely because nothing was watching — the tap sat two
-# releases behind while `brew install nolgia` shipped a CLI that could not
-# upload video, and no signal existed anywhere.
+# alarm for when the bumper itself is broken or wedged.
+#
+# NOL-137 was filed claiming the tap had fallen two releases behind. It had
+# not — the audit read a stale local clone, and the bumper had already shipped
+# 0.2.12 hours earlier. But nothing anywhere reports whether the tap is
+# current, so the claim was expensive to disprove and a REAL stall would have
+# been just as invisible. That is what this check fixes: not a drift that
+# happened, but the absence of any signal either way.
 #
 # Deliberately read-only: it fixes nothing, it only makes drift loud.
 on:

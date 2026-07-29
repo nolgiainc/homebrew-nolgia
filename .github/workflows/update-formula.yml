@@ -15,11 +15,12 @@ name: Update Formula
 #   - workflow_dispatch: manual.
 #
 # This job pushes straight to main rather than opening a PR. That is
-# deliberate: a bump PR still needs a human to merge it, and an unmerged bump
-# PR is exactly the failure mode that left the tap two releases behind
-# (NOL-137). The safety that a review would have provided is instead enforced
-# mechanically by the "Verify" step below, which refuses to commit a formula
-# whose checksums do not match freshly downloaded release artifacts.
+# deliberate: a bump PR would need a human to merge it, which reintroduces a
+# human step into a path that is fully mechanical and currently keeps the tap
+# current within six hours unattended. The safety that a review would have
+# provided is instead enforced by the "Verify" step below, which refuses to
+# commit a formula whose checksums do not match freshly downloaded release
+# artifacts — a check a human reviewer could not perform by eye anyway.
 on:
   repository_dispatch:
     types: [cli-released]
