@@ -3,7 +3,26 @@ name: Update Formula
 # Bumps only the version and sha256 fields of Formula/nolgia.rb to match the
 # latest nolgia-cli release. The formula itself is a normal committed file;
 # edit it freely — this workflow never rewrites anything else.
+#
+# Triggers:
+#   - repository_dispatch(cli-released): fired by nolgia-cli's release workflow
+#     immediately after it publishes a GitHub Release, so the tap is current
+#     within a minute instead of up to six hours later.
+#   - schedule: token-free backstop. If the dispatch never fires (missing or
+#     expired PAT on nolgia-cli), the tap still self-heals within six hours.
+#     Mirrors the same belt-and-braces shape as nolgia-api's OpenAPI
+#     propagation, where downstream repos also keep a scheduled fallback.
+#   - workflow_dispatch: manual.
+#
+# This job pushes straight to main rather than opening a PR. That is
+# deliberate: a bump PR still needs a human to merge it, and an unmerged bump
+# PR is exactly the failure mode that left the tap two releases behind
+# (NOL-137). The safety that a review would have provided is instead enforced
+# mechanically by the "Verify" step below, which refuses to commit a formula
+# whose checksums do not match freshly downloaded release artifacts.
 on:
+  repository_dispatch:
+    types: [cli-released]
   schedule:
     - cron: '17 */6 * * *'
   workflow_dispatch:
@@ -13,7 +32,9 @@ permissions:
 
 concurrency:
   group: update-formula
-  cancel-in-progress: true
+  # Never cancel mid-run: this job pushes to main, and interrupting it between
+  # the formula rewrite and the verify step is not a state worth racing into.
+  cancel-in-progress: false
 
 jobs:
   update:
@@ -21,33 +42,113 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        # NOTE: credentials are intentionally persisted — the "Commit if
+        # changed" step pushes with this checkout token. The
+        # `persist-credentials: false` dance is only required when a job hands
+        # the push off to peter-evans/create-pull-request, which supplies its
+        # own token and then collides with the persisted Authorization header.
 
       - name: Bump version and checksums
         env:
           GH_TOKEN: ${{ github.token }}
+          # Fired by nolgia-cli's release workflow; informational only. The tag
+          # actually used is always re-resolved from the GitHub API below, so a
+          # malformed or spoofed payload cannot steer which artifacts we hash.
+          DISPATCH_TAG: ${{ github.event.client_payload.tag || '' }}
         run: |
           set -euo pipefail
-          TAG=$(gh release view --repo nolgiacorp/nolgia-cli --json tagName --jq .tagName)
-          export VERSION=${TAG#v}
-          BASE="https://github.com/nolgiacorp/nolgia-cli/releases/download/${TAG}"
-          export MAC_SHA=$(curl -sSL "${BASE}/nolgia-x86_64-apple-darwin" | sha256sum | cut -d' ' -f1)
-          export LINUX_SHA=$(curl -sSL "${BASE}/nolgia-x86_64-unknown-linux-gnu" | sha256sum | cut -d' ' -f1)
+
+          if [ -n "${DISPATCH_TAG}" ]; then
+            echo "Dispatched for tag: ${DISPATCH_TAG} (re-resolving from API anyway)"
+          fi
+
+          # The repo moved nolgiacorp -> nolgiainc. The old name still works via
+          # GitHub's org-rename redirect, which is why this kept passing, but
+          # relying on it is a supply-chain hazard: if the abandoned org name is
+          # ever re-registered by someone else, the redirect stops pointing at
+          # us and this job would hash a stranger's binaries and push them to
+          # the tap. Always address the canonical org.
+          REPO="nolgiainc/nolgia-cli"
+
+          TAG=$(gh release view --repo "${REPO}" --json tagName --jq .tagName)
+          export VERSION="${TAG#v}"
+          BASE="https://github.com/${REPO}/releases/download/${TAG}"
+          echo "Latest release: ${TAG} (version ${VERSION})"
+
+          # Download to files, then hash. Two things matter here:
+          #   -f  makes curl fail on an HTTP error instead of writing the error
+          #       body. Without it a renamed or missing asset yields a 9-byte
+          #       "Not Found" page that hashes cleanly to
+          #       0019dfc4...b49b5 and gets committed as a real checksum,
+          #       breaking `brew install` for everyone with no failure signal.
+          #   The size floor catches any other way a non-binary could sneak in.
+          fetch() {
+            local name="$1" dest="$2"
+            echo "Fetching ${name}"
+            curl -fsSL --retry 3 --retry-delay 5 -o "${dest}" "${BASE}/${name}"
+            local size
+            size=$(wc -c < "${dest}")
+            if [ "${size}" -lt 1000000 ]; then
+              echo "::error::${name} is only ${size} bytes — that is not a release binary. Refusing to hash it."
+              file "${dest}" || true
+              exit 1
+            fi
+            echo "  ${size} bytes — $(file -b "${dest}")"
+          }
+
+          fetch nolgia-x86_64-apple-darwin mac.bin
+          fetch nolgia-x86_64-unknown-linux-gnu linux.bin
+
+          # Assign then export separately: `export X=$(...)` returns export's
+          # status, masking a failure in the substitution (shellcheck SC2155).
+          MAC_SHA=$(sha256sum mac.bin | cut -d' ' -f1)
+          LINUX_SHA=$(sha256sum linux.bin | cut -d' ' -f1)
+          export MAC_SHA LINUX_SHA
+          echo "macOS  sha256: ${MAC_SHA}"
+          echo "Linux  sha256: ${LINUX_SHA}"
+
           python3 - <<'PY'
           import os
           import re
 
           path = "Formula/nolgia.rb"
           text = open(path).read()
-          text = re.sub(r'^(  version )"[^"]*"', rf'\g<1>"{os.environ["VERSION"]}"', text, count=1, flags=re.M)
+          text, n = re.subn(
+              r'^(  version )"[^"]*"',
+              lambda m: f'{m.group(1)}"{os.environ["VERSION"]}"',
+              text, count=1, flags=re.M,
+          )
+          assert n == 1, "did not find the version line in Formula/nolgia.rb"
+
+          # The two sha256 lines are positional: macOS block first, Linux
+          # second. Assert the count so a future formula edit that adds or
+          # removes a platform fails loudly here instead of silently writing
+          # the macOS checksum onto the wrong platform.
+          assert len(re.findall(r'sha256 "[^"]*"', text)) == 2, (
+              "expected exactly 2 sha256 lines (macOS then Linux); "
+              "the formula layout changed — update this workflow to match"
+          )
           shas = iter([os.environ["MAC_SHA"], os.environ["LINUX_SHA"]])
           text = re.sub(r'(sha256 )"[^"]*"', lambda m: f'{m.group(1)}"{next(shas)}"', text, count=2)
           open(path, "w").write(text)
           PY
 
+          # Independent read-back: confirm what actually landed on disk matches
+          # the bytes we downloaded. This is the mechanical stand-in for the
+          # human review that a bump PR would have provided.
+          echo "Verifying rewritten formula"
+          grep -q "  version \"${VERSION}\"" Formula/nolgia.rb \
+            || { echo "::error::version ${VERSION} missing from formula after rewrite"; exit 1; }
+          grep -q "sha256 \"${MAC_SHA}\"" Formula/nolgia.rb \
+            || { echo "::error::macOS sha256 missing from formula after rewrite"; exit 1; }
+          grep -q "sha256 \"${LINUX_SHA}\"" Formula/nolgia.rb \
+            || { echo "::error::Linux sha256 missing from formula after rewrite"; exit 1; }
+          echo "Formula verified against freshly downloaded artifacts."
+
       - name: Commit if changed
         run: |
           set -euo pipefail
-          git diff --quiet && { echo "formula already current"; exit 0; }
+          git diff --quiet -- Formula/nolgia.rb && { echo "formula already current"; exit 0; }
           git config user.name "nolgia-bot"
           git config user.email "admin@nolgia.ai"
           git add Formula/nolgia.rb
