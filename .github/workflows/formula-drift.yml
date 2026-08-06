@@ -14,6 +14,12 @@ name: Formula drift check
 # happened, but the absence of any signal either way.
 #
 # Deliberately read-only: it fixes nothing, it only makes drift loud.
+#
+# NOL-483: "loud" turned out to be the part that was missing. This check did
+# exactly what it promised — it went red every single day while the tap sat
+# seven releases behind — and it changed nothing, because a red `schedule` run
+# emails nobody. Detection without delivery is not an alarm. The `alert` job
+# below is the delivery half.
 on:
   schedule:
     # 06:41 UTC daily — offset from Update Formula's */6 cadence so a bump has
@@ -84,3 +90,38 @@ jobs:
           check_sha nolgia-x86_64-unknown-linux-gnu "Linux"
 
           echo "Formula is current with ${TAG} and both checksums match."
+
+  alert:
+    name: Alert on drift
+    needs: [drift]
+    if: always() && needs.drift.result != 'cancelled'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Raise or resolve the drift alert
+        uses: ./.github/actions/alert
+        with:
+          # Distinct from the bumper's key on purpose. The bumper failing and
+          # the tap being stale are different facts with different fixes, and
+          # when the bumper breaks both fire — two threads is the correct
+          # signal, because the tap can also drift with a perfectly green
+          # bumper (a release published with renamed assets, say).
+          key: formula-drift
+          state: ${{ needs.drift.result == 'success' && 'resolved' || 'firing' }}
+          title: '`Formula/nolgia.rb` does not match the latest nolgia-cli release'
+          body: >-
+            The tap is serving a CLI that is not the current release, or is
+            serving it with a checksum that does not match the published
+            artifact. Either way `brew install nolgia` is wrong right now. Check
+            the `Update Formula` runs first — this check is read-only and never
+            fixes anything itself, so if the bumper is healthy the drift has a
+            cause the bumper cannot see.
+          token: ${{ github.token }}
