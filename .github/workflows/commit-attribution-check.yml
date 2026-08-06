@@ -29,6 +29,15 @@ name: Commit Attribution Check
 # gate or to stay broken. Dispatched here it runs the identical logic on the
 # identical commit; the resulting check-run is what unblocks the push. Manual
 # dispatch on any branch is fine too, and is a cheap way to test this check.
+#
+# Note on trust: because `--ref` selects which copy of this file executes, a
+# dispatched branch runs that branch's version of the logic. That is not a hole
+# this trigger opens — required status checks are matched by context *name*, so
+# anyone with push access can already report a green check of this name from an
+# `on: push` workflow on their own branch, with or without workflow_dispatch.
+# The gate is only as strong as who may push to main; closing that properly is
+# a repo-settings change (require a pull request before merging / restrict who
+# can push to main), not something this file can enforce about itself.
 on:
   pull_request:
   workflow_dispatch:

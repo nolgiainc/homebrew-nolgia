@@ -116,16 +116,44 @@ runs:
           "${MARKER}" "${ALERT_BODY}" "${RUN_URL}" > "${RUNNER_TEMP}/alert.md"
 
         ARGS=(--title "${ALERT_TITLE}" --body-file "${RUNNER_TEMP}/alert.md")
+        OPTIONAL=()
         if [ -n "${ALERT_ASSIGNEES}" ]; then
-          ARGS+=(--assignee "${ALERT_ASSIGNEES}")
+          OPTIONAL+=(--assignee "${ALERT_ASSIGNEES}")
         fi
         if [ -n "${ALERT_LABELS}" ]; then
-          ARGS+=(--label "${ALERT_LABELS}")
+          OPTIONAL+=(--label "${ALERT_LABELS}")
         fi
 
-        # Never let a failure to *report* a failure mask the failure itself.
-        # The calling job is already red; an unassignable login or a missing
-        # label must not turn that into a confusing second error.
-        gh issue create "${ARGS[@]}" || {
+        if [ "${#OPTIONAL[@]}" -gt 0 ] && gh issue create "${ARGS[@]}" "${OPTIONAL[@]}"; then
+          exit 0
+        fi
+
+        # `gh issue create` rejects the whole request if the assignee is not
+        # assignable or the label does not exist, and that would silence the
+        # alert in exactly the situation it exists for. So the issue itself is
+        # never allowed to depend on the optional metadata: file it bare, then
+        # re-attach assignee and label independently. The assignment is the
+        # only part that actually notifies a human, so it must not be lost to a
+        # missing `bug` label (or vice versa).
+        if [ "${#OPTIONAL[@]}" -gt 0 ]; then
+          echo "::warning::Could not create the alert issue with assignees/labels — retrying without them."
+        fi
+
+        if ! URL=$(gh issue create "${ARGS[@]}"); then
+          # Never let a failure to *report* a failure mask the failure itself.
+          # The calling job is already red; a broken issues API must not turn
+          # that into a confusing second error.
           echo "::error::Could not open the alert issue. The underlying failure still stands — see the log above."
-        }
+          exit 0
+        fi
+        echo "Raised ${URL}"
+
+        NUMBER="${URL##*/}"
+        if [ -n "${ALERT_ASSIGNEES}" ]; then
+          gh issue edit "${NUMBER}" --add-assignee "${ALERT_ASSIGNEES}" \
+            || echo "::warning::Alert ${URL} could not be assigned to '${ALERT_ASSIGNEES}' — nobody was notified by email. Check that the login is a collaborator."
+        fi
+        if [ -n "${ALERT_LABELS}" ]; then
+          gh issue edit "${NUMBER}" --add-label "${ALERT_LABELS}" \
+            || echo "::warning::Alert ${URL} could not be labelled '${ALERT_LABELS}'."
+        fi
