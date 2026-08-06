@@ -1,0 +1,131 @@
+name: Alert
+description: >-
+  Raise or resolve a deduplicated GitHub issue so a broken tap automation is
+  loud instead of silent.
+
+# WHY THIS EXISTS (NOL-483)
+#
+# `Update Formula` failed on every run for seven consecutive releases, and
+# `Formula drift check` went red every day alongside it. Both were doing their
+# job — the tap really was stale, and both workflows really did exit 1. What
+# failed is that a red scheduled run notifies nobody: GitHub emails the *author*
+# of a run, and a `schedule` run has no author. Thirty-odd failures were
+# delivered to no one while `brew install nolgia` shipped a CLI seven versions
+# old for a week.
+#
+# So the alarm has to land somewhere a human reads. This repo has no secrets of
+# any kind (`repos/.../actions/organization-secrets` returns zero), so Slack and
+# PagerDuty are not available — there is no webhook to post to. What
+# GITHUB_TOKEN can do is open an issue and assign it, and an assignment does
+# generate a real notification and email. That is the whole mechanism.
+#
+# Deduplicated on a hidden marker in the body rather than on the title, so the
+# title can carry current version numbers and still match tomorrow's alert. One
+# open issue per key: repeat failures become comments, so a stuck workflow reads
+# as a single escalating thread rather than 30 identical issues that get muted —
+# which would recreate exactly the silence this is fixing.
+#
+# Self-resolving on purpose. An alert closed by hand goes stale, and a stale
+# open alert is indistinguishable from a live one, so the next real failure
+# would hide inside it.
+
+inputs:
+  key:
+    description: >-
+      Stable dedupe key. At most one open issue exists per key; while one is
+      open, further firings are appended to it as comments.
+    required: true
+  state:
+    description: '"firing" raises or updates the alert; "resolved" closes it.'
+    required: true
+  title:
+    description: Issue title, used when the alert is first raised.
+    required: false
+    default: ''
+  body:
+    description: >-
+      Markdown for the issue body (first firing) or for the comment (repeat
+      firings and resolution). The run URL is appended automatically.
+    required: false
+    default: ''
+  assignees:
+    description: Comma-separated logins to assign when the alert is raised.
+    required: false
+    default: blackflame007
+  labels:
+    description: Comma-separated labels to apply when the alert is raised.
+    required: false
+    default: bug
+  token:
+    description: Token with issues:write.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Raise or resolve alert issue
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        ALERT_KEY: ${{ inputs.key }}
+        ALERT_STATE: ${{ inputs.state }}
+        ALERT_TITLE: ${{ inputs.title }}
+        ALERT_BODY: ${{ inputs.body }}
+        ALERT_ASSIGNEES: ${{ inputs.assignees }}
+        ALERT_LABELS: ${{ inputs.labels }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        set -euo pipefail
+
+        MARKER="<!-- alert-key: ${ALERT_KEY} -->"
+
+        # Match on the hidden marker in the body, not via `gh search issues`.
+        # Search is backed by an index that lags by minutes, which on a
+        # 6-hourly workflow is long enough to miss the open issue and file a
+        # duplicate. Listing the repo's open issues reads primary data.
+        EXISTING=$(gh api \
+          "repos/${GITHUB_REPOSITORY}/issues?state=open&per_page=100" \
+          --jq "[.[] | select(.pull_request == null)
+                     | select((.body // \"\") | contains(\"${MARKER}\"))]
+                | .[0].number // empty")
+
+        if [ "${ALERT_STATE}" = "resolved" ]; then
+          if [ -z "${EXISTING}" ]; then
+            echo "Healthy, and no alert was open. Nothing to do."
+            exit 0
+          fi
+          echo "Healthy again — resolving alert #${EXISTING}"
+          gh issue comment "${EXISTING}" --body "Resolved: this ran clean. ${RUN_URL}"
+          gh issue close "${EXISTING}" --reason completed
+          exit 0
+        fi
+
+        # printf, not a multi-line shell literal: this file is a YAML block
+        # scalar, so a literal newline inside a quoted string would carry the
+        # block's indentation into the issue body and render it as a code block.
+        if [ -n "${EXISTING}" ]; then
+          echo "Alert already open as #${EXISTING} — appending."
+          printf 'Still failing.\n\n%s\n\nFailing run: %s\n' \
+            "${ALERT_BODY}" "${RUN_URL}" > "${RUNNER_TEMP}/alert.md"
+          gh issue comment "${EXISTING}" --body-file "${RUNNER_TEMP}/alert.md"
+          exit 0
+        fi
+
+        echo "Raising a new alert issue."
+        printf '%s\n\n%s\n\nFailing run: %s\n' \
+          "${MARKER}" "${ALERT_BODY}" "${RUN_URL}" > "${RUNNER_TEMP}/alert.md"
+
+        ARGS=(--title "${ALERT_TITLE}" --body-file "${RUNNER_TEMP}/alert.md")
+        if [ -n "${ALERT_ASSIGNEES}" ]; then
+          ARGS+=(--assignee "${ALERT_ASSIGNEES}")
+        fi
+        if [ -n "${ALERT_LABELS}" ]; then
+          ARGS+=(--label "${ALERT_LABELS}")
+        fi
+
+        # Never let a failure to *report* a failure mask the failure itself.
+        # The calling job is already red; an unassignable login or a missing
+        # label must not turn that into a confusing second error.
+        gh issue create "${ARGS[@]}" || {
+          echo "::error::Could not open the alert issue. The underlying failure still stands — see the log above."
+        }

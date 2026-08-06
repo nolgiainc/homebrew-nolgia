@@ -22,8 +22,16 @@ name: Commit Attribution Check
 # trailers already merged would mean force-pushing six default branches and
 # invalidating every clone for a cosmetic gain.
 
+# workflow_dispatch exists so the tap bumper can run this check against its own
+# bump commit (NOL-483). That commit has to land on main, main requires this
+# check, and a PR opened with GITHUB_TOKEN never triggers `pull_request` — so
+# without a dispatchable entry point the bot's only options are to bypass the
+# gate or to stay broken. Dispatched here it runs the identical logic on the
+# identical commit; the resulting check-run is what unblocks the push. Manual
+# dispatch on any branch is fine too, and is a cheap way to test this check.
 on:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -45,8 +53,12 @@ jobs:
 
       - name: Reject Claude/Anthropic Co-authored-by trailers
         env:
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # On workflow_dispatch there is no pull_request payload, so fall back
+          # to the default branch: the range to inspect is then everything the
+          # dispatched ref adds on top of main, which is the same set of commits
+          # a PR from that ref would carry.
+          BASE_REF: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
         run: |
           set -uo pipefail
 
@@ -54,6 +66,15 @@ jobs:
             RANGE_START=$(git merge-base "origin/$BASE_REF" HEAD)
           else
             RANGE_START="$BASE_SHA"
+          fi
+
+          # Without this, an empty RANGE_START makes the range below read as
+          # `..HEAD`, which git resolves to HEAD..HEAD — an empty commit list
+          # that reports "nothing to check" and passes green having verified
+          # nothing. A gate that cannot determine what to inspect must fail.
+          if [ -z "$RANGE_START" ]; then
+            echo "::error::Could not resolve a base commit (BASE_REF='$BASE_REF', BASE_SHA='$BASE_SHA'). Refusing to pass without inspecting anything."
+            exit 1
           fi
 
           COMMITS=$(git log --no-merges --format=%H "$RANGE_START..HEAD")
