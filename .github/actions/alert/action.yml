@@ -95,8 +95,8 @@ runs:
             exit 0
           fi
           echo "Healthy again — resolving alert #${EXISTING}"
-          gh issue comment "${EXISTING}" --body "Resolved: this ran clean. ${RUN_URL}"
-          gh issue close "${EXISTING}" --reason completed
+          gh issue comment "${EXISTING}" --repo "${GITHUB_REPOSITORY}" --body "Resolved: this ran clean. ${RUN_URL}"
+          gh issue close "${EXISTING}" --repo "${GITHUB_REPOSITORY}" --reason completed
           exit 0
         fi
 
@@ -107,7 +107,7 @@ runs:
           echo "Alert already open as #${EXISTING} — appending."
           printf 'Still failing.\n\n%s\n\nFailing run: %s\n' \
             "${ALERT_BODY}" "${RUN_URL}" > "${RUNNER_TEMP}/alert.md"
-          gh issue comment "${EXISTING}" --body-file "${RUNNER_TEMP}/alert.md"
+          gh issue comment "${EXISTING}" --repo "${GITHUB_REPOSITORY}" --body-file "${RUNNER_TEMP}/alert.md"
           exit 0
         fi
 
@@ -115,7 +115,7 @@ runs:
         printf '%s\n\n%s\n\nFailing run: %s\n' \
           "${MARKER}" "${ALERT_BODY}" "${RUN_URL}" > "${RUNNER_TEMP}/alert.md"
 
-        ARGS=(--title "${ALERT_TITLE}" --body-file "${RUNNER_TEMP}/alert.md")
+        ARGS=(--repo "${GITHUB_REPOSITORY}" --title "${ALERT_TITLE}" --body-file "${RUNNER_TEMP}/alert.md")
         OPTIONAL=()
         if [ -n "${ALERT_ASSIGNEES}" ]; then
           OPTIONAL+=(--assignee "${ALERT_ASSIGNEES}")
@@ -150,10 +150,10 @@ runs:
 
         NUMBER="${URL##*/}"
         if [ -n "${ALERT_ASSIGNEES}" ]; then
-          gh issue edit "${NUMBER}" --add-assignee "${ALERT_ASSIGNEES}" \
+          gh issue edit "${NUMBER}" --repo "${GITHUB_REPOSITORY}" --add-assignee "${ALERT_ASSIGNEES}" \
             || echo "::warning::Alert ${URL} could not be assigned to '${ALERT_ASSIGNEES}' — nobody was notified by email. Check that the login is a collaborator."
         fi
         if [ -n "${ALERT_LABELS}" ]; then
-          gh issue edit "${NUMBER}" --add-label "${ALERT_LABELS}" \
+          gh issue edit "${NUMBER}" --repo "${GITHUB_REPOSITORY}" --add-label "${ALERT_LABELS}" \
             || echo "::warning::Alert ${URL} could not be labelled '${ALERT_LABELS}'."
         fi
