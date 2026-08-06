@@ -1,0 +1,135 @@
+name: Attribution drift check
+
+# Scans main's ACTUAL history for Claude/Anthropic Co-authored-by trailers and
+# alarms if one has landed.
+#
+# WHY THIS EXISTS (NOL-483)
+#
+# `commit-attribution-check.yml` gates pull requests. Until now it was also a
+# required status check on main, which had a side effect nobody designed: a
+# `pull_request`-triggered check can never exist on a commit pushed directly to
+# main, so main rejected every direct push. That is what broke the Homebrew tap
+# bumper for seven releases, and no available mechanism could satisfy the check
+# from CI (the reasoning is written out in update-formula.yml). The context had
+# to come off main's protection for the tap to work at all.
+#
+# This is the compensating control for that trade, and it is not a like-for-like
+# replacement — it is a different shape of control. The PR check is prevention
+# and only ever saw pull requests. This is detection and sees everything that
+# actually reaches main, including direct pushes and admin overrides, which the
+# required check never covered even when it was blocking. Weaker on the paths it
+# used to guard; stronger on the paths it never did.
+#
+# Read-only by design. Rewriting the default branch to strip a trailer would
+# invalidate every clone for a cosmetic gain — the same call NOL-171 made about
+# existing history. This reports; a human decides.
+
+on:
+  schedule:
+    # 06:11 UTC daily, ahead of the formula drift check at 06:41 so the two
+    # alarms do not arrive interleaved.
+    - cron: '11 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: attribution-drift
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: main carries no attribution trailers
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0 # full history: the scan walks main
+          persist-credentials: false
+
+      - name: Scan main for disallowed attribution trailers
+        env:
+          # The enforcement epoch: e7370af is the commit that introduced
+          # commit-attribution-check.yml (NOL-171, #8). Everything at or before
+          # it predates the convention being checked and is deliberately left
+          # alone — main carries 11 such commits, and NOL-171 said so
+          # explicitly ("Prevention only. Existing history is deliberately left
+          # alone"). Scanning from the repo root instead would fail on day one
+          # and never resolve, which is precisely the permanently-open alert
+          # that hides the next real failure.
+          BASELINE: e7370af4d0997f5404f25ed51b6240378bbc6085
+          BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -uo pipefail
+
+          # A missing baseline means the scan silently inspects nothing, so
+          # check rather than assume — the same failure mode the PR gate had
+          # with an unresolved base.
+          if ! git rev-parse --verify --quiet "${BASELINE}^{commit}" >/dev/null; then
+            echo "::error::Baseline ${BASELINE} is not in this repository. Refusing to report a clean scan without inspecting anything."
+            exit 1
+          fi
+
+          SCAN_RANGE="${BASELINE}..${BRANCH}"
+          echo "Scanning ${SCAN_RANGE} ($(git rev-list --count "${SCAN_RANGE}") commits since the NOL-171 baseline)"
+
+          # Per-commit, with the identical grep commit-attribution-check.yml
+          # uses. Deliberately the same expression and not a cleverer one: two
+          # gates for the same rule that disagree about what violates it is
+          # worse than either gate alone. A single `git log` over all bodies at
+          # once cannot work here anyway — commit messages contain newlines, so
+          # the records would split mid-body.
+          FAILED=0
+          for sha in $(git log --no-merges --format=%H "${SCAN_RANGE}"); do
+            HITS=$(git log -1 --format=%B "$sha" | grep -Ei '^Co-authored-by:.*(claude|anthropic)' || true)
+            if [ -n "$HITS" ]; then
+              FAILED=1
+              echo "::error::${sha} carries a disallowed attribution trailer"
+              git log -1 --format='  %h %s' "$sha"
+              while IFS= read -r line; do
+                echo "    ${line}"
+              done <<< "$HITS"
+            fi
+          done
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo ""
+            echo "These are already on ${SCAN_RANGE}. Do NOT rewrite the default branch to fix it —"
+            echo "that invalidates every clone. Decide deliberately, then close the alert issue."
+            exit 1
+          fi
+
+          echo "OK — no Claude/Anthropic Co-authored-by trailers on ${SCAN_RANGE}."
+
+  alert:
+    name: Alert on attribution drift
+    needs: [scan]
+    if: always() && needs.scan.result != 'cancelled'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Raise or resolve the attribution alert
+        uses: ./.github/actions/alert
+        with:
+          key: attribution-drift
+          state: ${{ needs.scan.result == 'success' && 'resolved' || 'firing' }}
+          title: 'A commit with a third-party attribution trailer has landed on main'
+          body: >-
+            `main` contains at least one commit whose message carries a
+            `Co-authored-by:` trailer crediting Claude or Anthropic, which org
+            convention does not allow (NOL-171). The offending SHAs are listed
+            in the failing run. History is deliberately not rewritten
+            automatically — rewriting the default branch invalidates every
+            clone — so this needs a human call.
+          token: ${{ github.token }}
