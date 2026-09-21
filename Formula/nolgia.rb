@@ -1,17 +1,17 @@
 class Nolgia < Formula
   desc "CLI for the Nolgia generative media platform (image, audio, video)"
   homepage "https://nolgia.ai"
-  version "0.2.31"
+  version "0.2.32"
   license "MIT"
 
   on_macos do
     url "https://github.com/nolgiainc/nolgia-cli/releases/download/v#{version}/nolgia-x86_64-apple-darwin"
-    sha256 "29b434ebe07ad3b665dd2db6339fffced24812669d297a52805157532f41e995"
+    sha256 "b6d66162d096a3b2ad12260e2510501a1fd858ab41a2bee1bb0e62ab6d4b3072"
   end
 
   on_linux do
     url "https://github.com/nolgiainc/nolgia-cli/releases/download/v#{version}/nolgia-x86_64-unknown-linux-gnu"
-    sha256 "8e4f267b0cc3dd82146f91379074a17496b648572a03a7cae699ccbfb20405b6"
+    sha256 "131b04365f0db243cb421833aad9b1393bf440189f3a3c5bee5c474009ca3c0b"
   end
 
   def install
