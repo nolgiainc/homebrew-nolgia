@@ -41,7 +41,7 @@ concurrency:
 jobs:
   scan:
     name: main carries no attribution trailers
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -108,7 +108,7 @@ jobs:
     name: Alert on attribution drift
     needs: [scan]
     if: always() && needs.scan.result != 'cancelled'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read

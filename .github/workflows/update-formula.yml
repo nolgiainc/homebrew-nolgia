@@ -86,7 +86,7 @@ concurrency:
 
 jobs:
   update:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -222,7 +222,7 @@ jobs:
     name: Alert on failure
     needs: [update]
     if: always() && needs.update.result != 'cancelled'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read

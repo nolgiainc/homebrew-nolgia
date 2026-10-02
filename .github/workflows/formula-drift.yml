@@ -37,7 +37,7 @@ concurrency:
 jobs:
   drift:
     name: Formula matches latest nolgia-cli release
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -95,7 +95,7 @@ jobs:
     name: Alert on drift
     needs: [drift]
     if: always() && needs.drift.result != 'cancelled'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
